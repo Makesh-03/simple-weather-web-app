@@ -7,7 +7,7 @@ Link: http://simple-weather-web-app-lb-963668554.us-east-1.elb.amazonaws.com/
 
 This is a full-stack weather application that consumes data from the National Weather Service API.
 
-<img width="1001" height="809" alt="simple Weather app" src="https://github.com/user-attachments/assets/2ba6d20d-da3d-4f81-ab29-4d6ec5b74b15" />
+<img width="1001" height="809" alt="585006617-2ba6d20d-da3d-4f81-ab29-4d6ec5b74b15" src="https://github.com/user-attachments/assets/90f01c65-e0eb-49fa-afd2-672bbd9d2708" />
 
 ## Features
 
