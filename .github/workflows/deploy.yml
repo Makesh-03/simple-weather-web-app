@@ -1,0 +1,159 @@
+name: CI/CD (Compose Test + Deploy)
+
+on:
+  push:
+    branches: ["main", "qa"]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+
+  ECR_BACKEND_REPO: ${{ vars.ECR_BACKEND_REPO }}
+  ECR_FRONTEND_REPO: ${{ vars.ECR_FRONTEND_REPO }}
+
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+
+jobs:
+# ------------------------
+# INTEGRATION TEST
+# ------------------------
+  integration-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start services
+        run: docker compose up -d --build
+
+      - name: Wait for backend
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:5000/health > /dev/null; then
+              echo "Backend is up"
+              exit 0
+            fi
+            echo "Waiting for backend ($i/30)"
+            sleep 2
+          done
+          echo "Backend failed"
+          docker compose logs
+          exit 1
+
+      - name: Wait for frontend
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:3000 > /dev/null; then
+              echo "Frontend is up"
+              exit 0
+            fi
+            echo "Waiting for frontend ($i/30)"
+            sleep 2
+          done
+          echo "Frontend failed"
+          docker compose logs
+          exit 1
+
+      - name: Test backend
+        run: curl --fail http://localhost:5000/health
+
+      - name: Test frontend
+        run: curl --fail http://localhost:3000
+
+      - name: Test API via Nginx
+        run: curl --fail http://localhost:3000/api/weather
+
+      - name: Show logs
+        if: always()
+        run: docker compose logs
+
+      - name: Shutdown
+        run: docker compose down
+
+# ------------------------
+# DEPLOY
+# ------------------------
+  deploy:
+    needs: integration-test
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required variables
+        run: |
+          if [ -z "$ECS_SERVICE" ] || [ -z "$ECS_CLUSTER" ]; then
+            echo "Missing ECS configuration"
+            exit 1
+          fi
+
+      # OIDC authentication
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/AWS_GitHub_Deploy_Pipeline_Role
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: vars
+        run: echo "IMAGE_TAG=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+      # ------------------------
+      # Build & Push Backend
+      # ------------------------
+      - name: Build & Push Backend
+        env:
+          IMAGE_TAG: ${{ steps.vars.outputs.IMAGE_TAG }}
+          ECR_URI: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BACKEND_REPO }}
+        run: |
+          docker build -t backend ./backend
+          docker tag backend:latest $ECR_URI:$IMAGE_TAG
+          docker tag backend:latest $ECR_URI:latest
+          docker push $ECR_URI:$IMAGE_TAG
+          docker push $ECR_URI:latest
+
+      # ------------------------
+      # Build & Push Frontend
+      # ------------------------
+      - name: Build & Push Frontend
+        env:
+          IMAGE_TAG: ${{ steps.vars.outputs.IMAGE_TAG }}
+          ECR_URI: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_FRONTEND_REPO }}
+        run: |
+          docker build -t frontend ./frontend
+          docker tag frontend:latest $ECR_URI:$IMAGE_TAG
+          docker tag frontend:latest $ECR_URI:latest
+          docker push $ECR_URI:$IMAGE_TAG
+          docker push $ECR_URI:latest
+
+      # ------------------------
+      # Deploy (Single ECS Service)
+      # ------------------------
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --region "$AWS_REGION" \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --force-new-deployment
+
+      - name: Wait for deployment
+        run: |
+          aws ecs wait services-stable \
+            --region "$AWS_REGION" \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
+
+      - name: Done
+        run: echo "Deployment successful"

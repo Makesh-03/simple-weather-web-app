@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      - DATA_DIR=/data
+    volumes:
+      - backend-data:/data
+    # Port 5000 is only exposed to the internal docker network.
+    # Uncomment to expose for local debugging:
+    ports:
+      - "5000:5000"
+
+  frontend:
+    build: ./frontend
+    environment:
+      # In compose, backend is reachable by its service name on the
+      # internal docker network. In ECS (same-task sidecar) leave the
+      # image default of "localhost".
+      - BACKEND_HOST=backend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
